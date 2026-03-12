@@ -368,6 +368,56 @@ async def trigger_pipeline(
         }
 
 # -----------------------------
+# Local File Cleanup
+# -----------------------------
+def cleanup_local_files(run_id: str, pdf_path: str):
+    """
+    Remove ALL local files and directories created during a pipeline run.
+    Called after successful S3 upload so nothing lingers on disk.
+    """
+    files_to_delete = []
+    dirs_to_delete = []
+
+    # Output files: outputs/{run_id}.json, outputs/{run_id}.xlsx
+    for ext in ["json", "xlsx"]:
+        p = os.path.join(OUTPUT_DIR, f"{run_id}.{ext}")
+        if os.path.exists(p):
+            files_to_delete.append(p)
+
+    # Output run directory: outputs/{run_id}/  (contains pdf/ sub-folder etc.)
+    run_output_dir = os.path.join(OUTPUT_DIR, run_id)
+    if os.path.isdir(run_output_dir):
+        dirs_to_delete.append(run_output_dir)
+
+    # Log file: logs/{run_id}_logs.json
+    log_file = os.path.join(LOGS_DIR, f"{run_id}_logs.json")
+    if os.path.exists(log_file):
+        files_to_delete.append(log_file)
+
+    # Uploaded PDF: uploads/{run_id}.pdf  or  uploads/{run_id}_merged.pdf
+    if pdf_path and os.path.exists(pdf_path):
+        files_to_delete.append(pdf_path)
+
+    # Delete individual files
+    for p in files_to_delete:
+        try:
+            os.remove(p)
+            print(f"🗑️  Cleaned up: {p}")
+        except Exception as e:
+            print(f"⚠️ Could not delete {p}: {e}")
+
+    # Delete directories (recursively)
+    for d in dirs_to_delete:
+        try:
+            shutil.rmtree(d)
+            print(f"🗑️  Cleaned up directory: {d}")
+        except Exception as e:
+            print(f"⚠️ Could not delete directory {d}: {e}")
+
+    print(f"🧹 Local cleanup complete for run {run_id}")
+
+
+# -----------------------------
 # Worker
 # -----------------------------
 def run_and_store(run_id: str, pdf_path: str):
@@ -690,7 +740,7 @@ def run_and_store(run_id: str, pdf_path: str):
 
         # Upload all files to S3 in parallel
         try:
-            s3_data = upload_pipeline_outputs(run_id, files_to_upload, cleanup_local=True)
+            s3_data = upload_pipeline_outputs(run_id, files_to_upload, cleanup_local=False)
 
             # Build debug_pdf_pages with S3 URLs for frontend access
             debug_pdf_pages_s3 = []
@@ -711,24 +761,10 @@ def run_and_store(run_id: str, pdf_path: str):
                     "debug_pdf_pages": debug_pdf_pages_s3,
                 }},
             )
-            
-            # Clean up the uploaded PDF file after successful S3 upload
-            try:
-                if os.path.exists(pdf_path):
-                    os.remove(pdf_path)
-                    print(f"🗑️  Deleted uploaded PDF: {pdf_path}")
-            except Exception as cleanup_exc:
-                print(f"⚠️ Could not delete uploaded PDF {pdf_path}: {cleanup_exc}")
 
-            # Clean up local debug pdf directory after S3 upload
-            if debug_pdf_dir and os.path.isdir(debug_pdf_dir):
-                try:
-                    import shutil
-                    shutil.rmtree(debug_pdf_dir)
-                    print(f"🗑️  Deleted local debug PDF dir: {debug_pdf_dir}")
-                except Exception as cleanup_exc:
-                    print(f"⚠️ Could not delete debug PDF dir {debug_pdf_dir}: {cleanup_exc}")
-                
+            # Clean up ALL local files after successful S3 upload
+            cleanup_local_files(run_id, pdf_path)
+
         except Exception as s3_exc:
             # S3 upload failed, but pipeline itself succeeded
             print(f"⚠️ S3 upload failed for run {run_id}: {s3_exc}")
